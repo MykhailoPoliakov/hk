@@ -29,7 +29,7 @@ def validate_source(connection: sqlite3.Connection) -> None:
          "LEFT JOIN source.wards w ON w.ward_code=b.ward_code WHERE w.ward_code IS NULL LIMIT 1"),
         ("invalid sensor timestamp", "SELECT rowid FROM source.barrier_sensors "
          "WHERE datetime(ts) IS NULL OR substr(ts,-1) != 'Z' LIMIT 1"),
-        ("invalid infirmary severity", "SELECT rowid, severity FROM source.infirmary_visits "
+        ("invalid infirmary severity", "SELECT visit_id, severity FROM source.effective_infirmary_visits "
          "WHERE severity IS NULL OR severity NOT IN ('1','2','3','4','5') LIMIT 1"),
         ("unresolved sorcerer name", "SELECT sorcerer_id, original_name FROM source.clean_sorcerers "
          "WHERE name_status = 'unresolved' LIMIT 1"),
@@ -52,7 +52,7 @@ def validate_source(connection: sqlite3.Connection) -> None:
             raise ValueError(f"Invalid mission participants or casualties: {mission}")
         missions[mission] = set(assigned)
     for visit, sorcerer, mission in connection.execute(
-        "SELECT visit_id, sorcerer_id, mission_id FROM source.infirmary_visits"
+        "SELECT visit_id, sorcerer_id, mission_id FROM source.effective_infirmary_visits"
     ):
         if sorcerer not in roster:
             raise ValueError(f"Unknown sorcerer for visit {visit}: {sorcerer}")
@@ -83,7 +83,7 @@ def create_final_database(raw_database: Path, final_database: Path) -> None:
         pass
     completed = False
     try:
-        connection = closing(sqlite3.connect(final_database.as_uri(), uri=True)).__enter__()
+        connection = sqlite3.connect(final_database.as_uri(), uri=True)
         try:
             with connection:
                 connection.execute("ATTACH DATABASE ? AS source", (raw_database.resolve().as_uri() + "?mode=ro",))
@@ -144,7 +144,7 @@ def create_final_database(raw_database: Path, final_database: Path) -> None:
                      || 'occur in normally formatted roster names; the original is preserved in data.db.'),
                     ('missing_technique', 'Blank technique values remain missing; they are not inferred.'),
                     ('severity', 'Severity remains the recorded code; its clinical meaning is unverified.'),
-                    ('drop', 'Only drop 0 is included. Healer sessions and later corrections are unavailable.');
+                    ('drop', 'See the source tables for the available drop and correction history.');
                 CREATE UNIQUE INDEX missions_id ON missions(mission_id);
                 CREATE UNIQUE INDEX infirmary_visit_id ON infirmary_visits(visit_id);
                 CREATE UNIQUE INDEX sorcerer_id ON sorcerers(sorcerer_id);

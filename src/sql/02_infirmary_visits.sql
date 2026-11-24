@@ -6,14 +6,14 @@ WITH normalized AS (
         CASE
             WHEN v.injury_code GLOB '[a-zA-Z][a-zA-Z][a-zA-Z][0-9][0-9]'
                  AND EXISTS (
-                     SELECT 1 FROM infirmary_visits reference
+                     SELECT 1 FROM effective_infirmary_visits reference
                      WHERE reference.injury_code =
                          upper(substr(v.injury_code, 1, 3)) || '-' || substr(v.injury_code, 4, 2)
                  )
             THEN upper(substr(v.injury_code, 1, 3)) || '-' || substr(v.injury_code, 4, 2)
             ELSE v.injury_code
         END AS normalized_injury_code
-    FROM infirmary_visits v
+    FROM effective_infirmary_visits v
 )
 SELECT
     visit_id,

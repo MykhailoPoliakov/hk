@@ -38,17 +38,6 @@ def find_rct_candidates(connection: sqlite3.Connection) -> dict[str, list[RctEvi
 
     evidence: dict[str, list[RctEvidence]] = defaultdict(list)
     
-    # Load healer sessions to exclude visits with external healing
-    healed_visits: set[str] = set()
-    try:
-        for (visit_id,) in connection.execute(
-            "SELECT DISTINCT visit_id FROM visits_with_external_healing WHERE has_healer_overlap > 0"
-        ):
-            healed_visits.add(visit_id)
-    except sqlite3.OperationalError:
-        # Drop 0: healer_sessions table doesn't exist yet
-        pass
-    
     visits = connection.execute(
         "SELECT v.sorcerer_id, v.visit_id, v.severity, v.admitted_at, v.discharged_at, "
         "v.recovery_hours FROM infirmary_visits v "
@@ -58,8 +47,6 @@ def find_rct_candidates(connection: sqlite3.Connection) -> dict[str, list[RctEvi
         "AND v.recovery_hours >= 0 AND v.recovery_hours < 24"
     )
     for sorcerer, visit, severity, admitted, discharged, hours in visits:
-        if visit in healed_visits:
-            continue
         start = _utc(admitted)
         end = _utc(discharged)
         patient_readings = readings[sorcerer]

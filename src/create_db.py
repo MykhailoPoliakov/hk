@@ -14,6 +14,7 @@ def quote_identifier(name: str) -> str:
 def create_database(
     data_folder: Path = Path(__file__).resolve().parent.parent / "initial_data",
     database_path: Path = Path(__file__).resolve().parent.parent / "data.db",
+    allowed_files: set[str] | None = None,
 ) -> dict[str, int]:
     """Create a SQLite database with one raw text table per CSV file."""
     data_folder = Path(data_folder)
@@ -22,6 +23,8 @@ def create_database(
         raise NotADirectoryError(f"Data folder does not exist: {data_folder}")
 
     csv_files = sorted(data_folder.glob("*.csv"))
+    if allowed_files is not None:
+        csv_files = [path for path in csv_files if path.name in allowed_files]
     if not csv_files:
         raise ValueError(f"No CSV files found in {data_folder}")
 
@@ -38,7 +41,7 @@ def create_database(
         with closing(sqlite3.connect(database_path)) as connection, connection:
             connection.execute("BEGIN")
             for csv_file in csv_files:
-                encoding = "cp932" if csv_file.name == "infirmary_visits.csv" else "utf-8-sig"
+                encoding = "cp932" if csv_file.name in ("infirmary_visits.csv", "infirmary_corrections.csv") else "utf-8-sig"
                 with csv_file.open(encoding=encoding, newline="") as source:
                     reader = csv.reader(source, strict=True)
                     headers = next(reader, None)

@@ -44,11 +44,69 @@ def generate_answers(
             ("reviewed_infirmary_visits", "reviewed_device_assignments", "attributed_ce_wearable"),
         )
         load_temporary_views(connection, "06_estimated_timestamps.sql", ("estimated_infirmary_visits",))
-        try:
+        has_healer_data = bool(connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='healer_sessions'"
+        ).fetchone())
+        has_corrections = bool(connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='infirmary_corrections'"
+        ).fetchone())
+        if has_healer_data:
             load_temporary_views(connection, "07_healer_sessions.sql", ("healer_visit_overlap", "visits_with_external_healing"))
-            has_healer_data = True
-        except (FileNotFoundError, sqlite3.OperationalError):
-            has_healer_data = False
+        drop = 2 if has_corrections else 1 if has_healer_data else 0
+        correction_lines = []
+        audit_lines = []
+        bonus_lines = []
+        if has_corrections:
+            correction_counts = dict(connection.execute(
+                "SELECT op, COUNT(*) FROM correction_history GROUP BY op"
+            ))
+            correction_lines = [
+                f"Drop 2 correction feed: {correction_counts.get('I', 0):,} inserts, "
+                f"{correction_counts.get('U', 0):,} updates, {correction_counts.get('D', 0):,} deletes; "
+                "applied in sequence to the visit snapshot, with before/after history retained."
+            ]
+            audit_lines = [
+                f"  Audit {audit_id} at {timestamp}: {account}, {object_name}, {record_id}, {action}, {detail}."
+                for audit_id, timestamp, account, object_name, record_id, action, detail in connection.execute(
+                    "SELECT audit_id, ts, account, object, record_id, action, detail FROM audit_log "
+                    "WHERE object IN ('data_dictionary', 'infirmary_config') OR action='reassign_id' "
+                    "ORDER BY ts, audit_id"
+                )
+            ]
+            suspects = connection.execute(
+                "SELECT account, SUM(object='device_firmware' AND detail LIKE '%v2.3%'), "
+                "SUM(object='data_dictionary' AND record_id='infirmary_visits.severity'), "
+                "SUM(object='infirmary_config' AND record_id='discharge_terminal'), "
+                "SUM(action='reassign_id') FROM audit_log GROUP BY account "
+                "HAVING SUM(object='device_firmware' AND detail LIKE '%v2.3%') > 0 "
+                "AND SUM(object='data_dictionary' AND record_id='infirmary_visits.severity') > 0 "
+                "AND SUM(object='infirmary_config' AND record_id='discharge_terminal') > 0 "
+                "AND SUM(action='reassign_id') > 0"
+            ).fetchall()
+            bonus_lines.append("Bonus - Host: inference from audit account and roster, not direct proof of account ownership.")
+            if not suspects:
+                bonus_lines.append("  No account matches all four observed audit patterns; investigate manually.")
+            for account, firmware_pushes, dictionary_edits, clock_changes, reassignments in suspects:
+                parts = account.split(".")
+                matches = []
+                if len(parts) == 3 and parts[0] == "hlr" and len(parts[2]) == 1:
+                    for sid, name in connection.execute("SELECT sorcerer_id, name FROM clean_sorcerers"):
+                        names = name.split()
+                        if len(names) == 2 and names[1].casefold() == parts[1].casefold() and names[0][0].casefold() == parts[2].casefold():
+                            sessions = connection.execute(
+                                "SELECT COUNT(*) FROM healer_sessions WHERE healer_id=?", (sid,)
+                            ).fetchone()[0]
+                            matches.append((sid, name, sessions))
+                bonus_lines.append(
+                    f"  Account {account}: {firmware_pushes} v2.3 pushes, {dictionary_edits} severity-dictionary edit(s), "
+                    f"{clock_changes} discharge-clock change(s), {reassignments} ID reassignment(s)."
+                )
+                bonus_lines.extend(
+                    f"  Matching roster: {sid}, {name}; {sessions} recorded sessions as healer."
+                    for sid, name, sessions in matches
+                )
+                if len(matches) != 1:
+                    bonus_lines.append(f"  Account-to-roster mapping is ambiguous ({len(matches)} matches).")
 
         def scalar(query: str) -> int:
             return connection.execute(query).fetchone()[0]
@@ -107,8 +165,23 @@ def generate_answers(
             normalized_codes += code != original_code
             missing_mission += not mission_id
             test_code_count += code == "TST-00"
-        for severity, hours in final.execute("SELECT severity, recovery_hours FROM infirmary_visits"):
-            recovery[severity].append(hours)
+        for severity, hours in connection.execute(
+            "SELECT v.severity, v.estimated_recovery_hours FROM estimated_infirmary_visits v "
+            "JOIN clean_missions m ON m.mission_id=v.mission_id "
+            "WHERE v.estimated_timing_status='usable_under_assumption' "
+            "AND v.missing_mission=0 AND v.test_code_review=0 "
+            "AND m.ward_status!='unmatched' AND m.conflicting_mission_id=0"
+        ):
+            recovery[int(severity)].append(hours)
+        recovery_visits = sum(len(values) for values in recovery.values())
+        raw_missing = scalar("SELECT COUNT(*) FROM infirmary_visits WHERE mission_id IS NULL OR mission_id=''")
+        raw_test_codes = scalar("SELECT COUNT(*) FROM infirmary_visits WHERE injury_code='TST-00'")
+        original_code_variants = scalar(
+            "SELECT COUNT(*) FROM infirmary_visits v "
+            "WHERE v.injury_code GLOB '[a-zA-Z][a-zA-Z][a-zA-Z][0-9][0-9]' "
+            "AND EXISTS (SELECT 1 FROM infirmary_visits r WHERE r.injury_code = "
+            "upper(substr(v.injury_code, 1, 3)) || '-' || substr(v.injury_code, 4, 2))"
+        )
 
         inferred_times = scalar(
             "SELECT COUNT(*) FROM estimated_infirmary_visits "
@@ -118,8 +191,6 @@ def generate_answers(
             "SELECT COUNT(*) FROM estimated_infirmary_visits "
             "WHERE estimated_timing_status = 'negative_duration'"
         )
-        final_visits = final.execute("SELECT COUNT(*) FROM infirmary_visits").fetchone()[0]
-
         firmware = {
             version: (total, positives)
             for version, total, positives in connection.execute(
@@ -143,6 +214,33 @@ def generate_answers(
         tokyo = statistics.median(residuals["Tokyo"])
         kyoto = statistics.median(residuals["Kyoto"])
         candidates = find_rct_candidates(final)
+        healer_removed_details = []
+        if has_healer_data:
+            final.execute("ATTACH DATABASE ? AS raw", (database_uri,))
+            final.execute(
+                "CREATE TEMP VIEW infirmary_visits AS "
+                "SELECT v.visit_id, v.sorcerer_id, v.mission_id, v.admitted_at_utc AS admitted_at, "
+                "v.discharged_at_utc AS discharged_at, CAST(v.severity AS INTEGER) AS severity, "
+                "v.identity_review, v.estimated_recovery_hours AS recovery_hours "
+                "FROM raw.estimated_infirmary_visits v JOIN main.missions m ON m.mission_id=v.mission_id "
+                "WHERE v.estimated_timing_status='usable_under_assumption' "
+                "AND v.missing_mission=0 AND v.test_code_review=0"
+            )
+            try:
+                before_healer_filter = find_rct_candidates(final)
+            finally:
+                final.execute("DROP VIEW temp.infirmary_visits")
+            for sid in sorted(set(before_healer_filter) - set(candidates)):
+                for item in before_healer_filter[sid]:
+                    sessions = connection.execute(
+                        "SELECT session_id, healer_id, start_ts FROM healer_visit_overlap "
+                        "WHERE visit_id=? ORDER BY start_ts", (item.visit_id,)
+                    ).fetchall()
+                    if sessions:
+                        healer_removed_details.append(
+                            f"  {sid}, {item.visit_id}: "
+                            + "; ".join(f"{session} by {healer} at {start}" for session, healer, start in sessions)
+                        )
         final.execute(
             "CREATE TEMP VIEW infirmary_visits AS "
             "SELECT visit_id, sorcerer_id, mission_id, admitted_at, "
@@ -184,12 +282,13 @@ def generate_answers(
         ]
 
         lines = [
-            f"DROP {1 if has_healer_data else 0} ANSWERS - PROVISIONAL",
-            f"This report analyzes drop 0{' and drop 1 healer sessions' if has_healer_data else ''} only; later drops are not incorporated.",
+            f"DROP {drop} ANSWERS - PROVISIONAL",
+            f"This report analyzes drops 0 through {drop}.",
             "",
             "A1 - Ingest",
             f"The source CSVs are in SQLite, not yet in a notebook. " +
-            ("healer_sessions.csv contains 5,702 healer-patient-time records (drop 1); " if has_healer_data else "") +
+            (f"healer_sessions.csv contains {scalar('SELECT COUNT(*) FROM healer_sessions'):,} healer-patient-time records (drop 1); " if has_healer_data else "") +
+            ("infirmary_corrections.csv also requires CP932 decoding; " if has_corrections else "") +
             "infirmary_visits.csv requires CP932 decoding; the wearable file is streamed "
             "in batches because it has over five million rows. The PDF and dictionary "
             "are separate documents and have not been loaded into a notebook.",
@@ -218,7 +317,8 @@ def generate_answers(
             "",
             "B4 - Dictionary statements challenged by the data:",
             f"  The visit mission_id is described as the mission where the injury happened, "
-            f"but {missing_mission:,} visits have a blank mission_id.",
+            f"but {raw_missing:,} original visits have a blank mission_id "
+            f"({missing_mission:,} remain after corrections).",
             f"  Mission ward is described as a romaji name, but {reversed_wards:,} deduplicated "
             "mission rows contain reversed names.",
             f"  The dictionary says sorcerer IDs are never reused, but {len(reused_id_evidence):,} "
@@ -234,6 +334,7 @@ def generate_answers(
             *firmware_lines,
             "  Severity descriptions and the statement that all infirmary times are JST require "
             "further verification; negative intervals alone do not prove the correct interpretation.",
+            *audit_lines,
             "",
             "B5 - Curse log (issues observed so far):",
             f"  Reversed sorcerer names: {reversed_names:,} rows normalized after validating "
@@ -242,13 +343,17 @@ def generate_answers(
             "clean_missions removes exact duplicates while retaining and flagging conflicts.",
             f"  Reversed ward spellings: {reversed_wards:,} deduplicated rows; "
             f"map unique reversals to reference wards and flag {unmatched_wards:,} unmatched rows.",
-            f"  Injury-code variants: {normalized_codes:,} rows normalized to an observed canonical code.",
-            f"  Visit timing: {negative:,} raw negative and {invalid:,} unparseable intervals. "
+            f"  Injury-code variants: {original_code_variants:,} in original visits; "
+            f"{normalized_codes:,} effective visits normalized by the review view after applying corrections.",
+            *correction_lines,
+            f"  Visit timing: {negative:,} negative and {invalid:,} unparseable intervals "
+            "in effective visits before timezone interpretation. "
             f"For {inferred_times:,} visits, discharge is provisionally interpreted as UTC after "
             "a mission-start cutoff of 2026-02-28 00:00 UTC; admissions remain JST. "
             f"{remaining_negative:,} negative intervals remain under this assumption.",
-            f"  Missing visit missions: {missing_mission:,}; TST-00 visits: {test_code_count:,}. "
-            "These rows remain in the raw database but are excluded from final.db.",
+            f"  Original missing visit missions: {raw_missing:,}; original TST-00 visits: {raw_test_codes:,}. "
+            f"After corrections: {missing_mission:,} and {test_code_count:,}, respectively. "
+            "Raw rows are preserved; ineligible visits are excluded from final.db.",
             f"  Casualties versus status: {len(active_casualties):,} reported casualty IDs are marked active; "
             "retain both sources; check historical identity against the current join date.",
             f"  Identity ambiguity: {pre_join_visits:,} visits predate the current holder's join date. "
@@ -256,31 +361,45 @@ def generate_answers(
             "  Firmware v2.3 has an anomalous positive rate; flag readings for review, not sign reversal.",
             "  Kyoto residual values have a much larger raw scale than Tokyo; retain raw units pending evidence.",
             "  Source tables remain unchanged. final.db excludes test/missing-mission visits and "
-            "uncertain wearable attribution; target/chlogs.txt records row-level changes and flags.",
+            "uncertain wearable attribution"
+            + (", as well as visits flagged for healer overlap" if has_healer_data else "")
+            + "; target/chlogs.txt records row-level changes and flags.",
             "",
             "C1 - Recovery time: normalized UTC discharge minus normalized UTC admission, in hours.",
-            f"Medians use {final_visits:,} mission-linked non-test visits with usable intervals. "
+            f"Medians use {recovery_visits:,} mission-linked non-test visits with usable intervals, "
+            "including healer-assisted visits. "
             "The inferred timezone cutoff is unconfirmed, so these are provisional.",
             *medians,
             "",
             "C2 - Provisional screen: an active current ID has at least two mission-linked "
             "recorded severity 4/5 visits under 24 hours, each with at least two consecutive "
-            "positive hourly readings from an assigned v2.2/v2.4 device during the recorded visit.",
+            "positive hourly readings from an assigned v2.2/v2.4 device during the recorded visit"
+            + (" and no recorded overlapping healer session." if has_healer_data else "."),
             "This is a screening rule, not proof of self-healing: the thresholds, severity "
-            "interpretation, and discharge-time cutoff are assumptions, and healer assistance "
-            "cannot be checked without drop 1. Firmware v2.3 is excluded.",
+            "interpretation, and discharge-time cutoff are assumptions; "
+            + ("healer records may be incomplete." if has_healer_data
+               else "healer assistance cannot be checked without drop 1.")
+            + " Firmware v2.3 is excluded.",
             "",
-            f"D1 - Provisional candidates based on drop 0: {candidate_ids}.",
+            f"D1 - Provisional candidates based on drops 0 through {drop}: {candidate_ids}.",
             *candidate_details,
             "These are candidates, not confirmed RCT users or a recommendation to submit: "
             "positive readings may have other causes, the timestamps may be inconsistent, "
-            "and external healing and later corrections have not been checked.",
+            + ("and healer records may be incomplete."
+               if has_corrections else "healer records may be incomplete, and later corrections have not been checked."
+               if has_healer_data else "and external healing and later corrections have not been checked."),
             "D2 - The following previous screen candidates no longer satisfy the 24-hour "
             f"rule after the inferred timezone correction: {', '.join(removed_candidates) or 'none'}.",
             *removed_details,
+            *(
+                ["  Previously qualifying visits with recorded healer overlap:", *healer_removed_details]
+                if healer_removed_details else []
+            ),
             "This does not prove they cannot use RCT. Other false positives remain possible, "
             "including healer assistance. Firmware v2.3 has a near-universal positive sign "
             "and must not be classified as RCT from that sign alone.",
+            "",
+            *bonus_lines,
         ]
 
     output = Path(output)

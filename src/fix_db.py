@@ -20,6 +20,14 @@ def fill_db(database: Path = DATABASE, sql_directory: Path = SQL_DIRECTORY) -> l
     scripts = [path.read_text(encoding="utf-8-sig") for path in sql_files]
     database_uri = Path(database).resolve().as_uri() + "?mode=rw"
     with closing(sqlite3.connect(database_uri, uri=True)) as connection, connection:
+        if not connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='healer_sessions'"
+        ).fetchone():
+            scripts = [script for path, script in zip(sql_files, scripts) if path.name != "07_healer_sessions.sql"]
+            scripts.append(
+                "CREATE VIEW visits_with_external_healing AS "
+                "SELECT NULL AS visit_id, NULL AS sorcerer_id, 0 AS has_healer_overlap WHERE 0;"
+            )
         connection.executescript("BEGIN;\n" + "\n;\n".join(scripts) + "\n;\nCOMMIT;")
     return [path.name for path in sql_files]
 

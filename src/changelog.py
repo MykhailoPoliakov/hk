@@ -23,6 +23,9 @@ def write_changelog(connection: sqlite3.Connection, output: Path) -> Counter[str
     ):
         missions[tuple(row[:9])] = row[9:]
     visits = {}
+    healed_visits = {
+        row[0] for row in connection.execute("SELECT visit_id FROM visits_with_external_healing")
+    }
     for row in connection.execute(
         "SELECT visit_id, sorcerer_id, mission_id, admitted_at, discharged_at, "
         "original_injury_code, severity, admitted_from, injury_code, timing_status, "
@@ -61,7 +64,10 @@ def write_changelog(connection: sqlite3.Connection, output: Path) -> Counter[str
                     flags.extend(["conflicting_mission_id", "excluded_from_final"])
             emit("missions", rowid, dict(zip(mission_columns, values)), changes, flags)
 
-        for row in connection.execute("SELECT rowid, * FROM infirmary_visits ORDER BY rowid"):
+        for row in connection.execute(
+            "SELECT rowid, visit_id, sorcerer_id, mission_id, admitted_at, discharged_at, "
+            "injury_code, severity, admitted_from FROM effective_infirmary_visits ORDER BY rowid"
+        ):
             rowid, *values = row
             (
                 injury, timing, identity, missing_mission, test_code,
@@ -89,9 +95,23 @@ def write_changelog(connection: sqlite3.Connection, output: Path) -> Counter[str
                 flags.append("excluded_from_final")
             else:
                 changes["severity"] = {"before": values[6], "after": int(values[6])}
+            if values[0] in healed_visits:
+                flags.extend(["healer_overlap", "excluded_from_final"])
             if assumption == "inferred_discharge_utc":
                 flags.append("inferred_timestamp_rule")
-            emit("infirmary_visits", rowid, dict(zip(visit_columns, values)), changes, flags)
+            emit("effective_infirmary_visits", rowid, dict(zip(visit_columns, values)), changes, flags)
+
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='correction_history'"
+        ).fetchone():
+            for rowid, seq, op, op_ts, visit_id, before, after in connection.execute(
+                "SELECT source_rowid, seq, op, op_ts, visit_id, before_json, after_json "
+                "FROM correction_history ORDER BY seq"
+            ):
+                emit("infirmary_corrections", rowid, {
+                    "seq": seq, "op": op, "op_ts": op_ts, "visit_id": visit_id,
+                }, {"visit": {"before": json.loads(before) if before else None,
+                              "after": json.loads(after) if after else None}}, [])
 
         for row in connection.execute(
             "SELECT s.rowid, s.sorcerer_id, s.name, s.join_date, s.status, "
@@ -154,23 +174,19 @@ def write_changelog(connection: sqlite3.Connection, output: Path) -> Counter[str
             }, {"residual_ce": {"before": residual_ce, "after": float(residual_ce)}},
                 ["unit_review_required"] if city == "Kyoto" else [])
         
-        # Drop 1: Log healer sessions and their overlap with visits
-        try:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='healer_sessions'"
+        ).fetchone():
             for row in connection.execute(
-                "SELECT h.session_id, h.healer_id, h.patient_id, h.start_ts, "
-                "GROUP_CONCAT(DISTINCT CASE WHEN v.visit_id IS NOT NULL THEN v.visit_id END, '|') "
-                "FROM (SELECT rowid, session_id, healer_id, patient_id, start_ts FROM healer_sessions) h "
-                "LEFT JOIN visits_with_external_healing v ON v.healer_ids LIKE '%' || h.healer_id || '%' "
-                "AND v.sorcerer_id = h.patient_id GROUP BY h.session_id"
+                "SELECT h.rowid, h.session_id, h.healer_id, h.patient_id, h.start_ts, "
+                "GROUP_CONCAT(v.visit_id, '|') FROM healer_sessions h "
+                "JOIN healer_visit_overlap v ON v.session_id=h.session_id "
+                "GROUP BY h.rowid ORDER BY h.rowid"
             ):
-                session_id, healer_id, patient_id, start_ts, visit_ids = row
-                if visit_ids:
-                    flags = ["healer_session", "affected_visits"]
-                    emit("healer_sessions", 0, {
-                        "session_id": session_id, "healer_id": healer_id,
-                        "patient_id": patient_id, "start_ts": start_ts,
-                        "overlapping_visits": visit_ids,
-                    }, {}, flags)
-        except sqlite3.OperationalError:
-            pass
+                rowid, session_id, healer_id, patient_id, start_ts, visit_ids = row
+                emit("healer_sessions", rowid, {
+                    "session_id": session_id, "healer_id": healer_id,
+                    "patient_id": patient_id, "start_ts": start_ts,
+                    "overlapping_visits": visit_ids,
+                }, {}, ["healer_session", "affected_visits"])
     return counts

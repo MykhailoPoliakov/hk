@@ -1,0 +1,10 @@
+stage_order,sorcerer_id,visit_id,before_recovery_hours,corrected_recovery_hours,overlapping_healer_sessions,reason
+2,S-0034,V-005454,20.2,29.2,,Candidate no longer meets the repeated-visit screen after timestamp correction
+2,S-0034,V-007299,18.4167,27.4167,,Candidate no longer meets the repeated-visit screen after timestamp correction
+2,S-0403,V-005215,21.75,30.75,,Candidate no longer meets the repeated-visit screen after timestamp correction
+2,S-0403,V-005533,20.4333,29.4333,,Candidate no longer meets the repeated-visit screen after timestamp correction
+2,S-0403,V-006754,22.1,31.1,,Candidate no longer meets the repeated-visit screen after timestamp correction
+2,S-0655,V-005647,21.8667,30.8667,,Candidate no longer meets the repeated-visit screen after timestamp correction
+2,S-0655,V-006110,22.7667,31.7667,,Candidate no longer meets the repeated-visit screen after timestamp correction
+3,S-0663,V-001738,10.1833,10.1833,HS-01200 by S-0267 at 2025-08-26T11:21:00Z,Candidate no longer meets the repeated-visit screen after the healer filter
+3,S-0663,V-002196,11.0833,11.0833,HS-01518 by S-0439 at 2025-09-25T20:57:00Z,Candidate no longer meets the repeated-visit screen after the healer filter

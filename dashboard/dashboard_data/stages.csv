@@ -1,0 +1,22 @@
+stage_order,stage,sorcerer_id,included,qualifying_visits,reason
+1,Before inferred timestamp correction,S-0009,1,2,Initial diagnostic
+1,Before inferred timestamp correction,S-0034,1,2,Initial diagnostic
+1,Before inferred timestamp correction,S-0101,1,2,Initial diagnostic
+1,Before inferred timestamp correction,S-0403,1,3,Initial diagnostic
+1,Before inferred timestamp correction,S-0533,1,2,Initial diagnostic
+1,Before inferred timestamp correction,S-0655,1,2,Initial diagnostic
+1,Before inferred timestamp correction,S-0663,1,2,Initial diagnostic
+2,"After inferred timestamp correction, before healer filter",S-0009,1,4,Still meets screen
+2,"After inferred timestamp correction, before healer filter",S-0034,0,0,No longer meets screen after inferred timestamp correction
+2,"After inferred timestamp correction, before healer filter",S-0101,1,4,Still meets screen
+2,"After inferred timestamp correction, before healer filter",S-0403,0,0,No longer meets screen after inferred timestamp correction
+2,"After inferred timestamp correction, before healer filter",S-0533,1,4,Still meets screen
+2,"After inferred timestamp correction, before healer filter",S-0655,0,0,No longer meets screen after inferred timestamp correction
+2,"After inferred timestamp correction, before healer filter",S-0663,1,2,Still meets screen
+3,After recorded healer filter,S-0009,1,4,Still meets screen
+3,After recorded healer filter,S-0034,0,0,Not in this stage
+3,After recorded healer filter,S-0101,1,4,Still meets screen
+3,After recorded healer filter,S-0403,0,0,Not in this stage
+3,After recorded healer filter,S-0533,1,4,Still meets screen
+3,After recorded healer filter,S-0655,0,0,Not in this stage
+3,After recorded healer filter,S-0663,0,0,No longer meets screen after recorded healer filter

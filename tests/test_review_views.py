@@ -12,6 +12,7 @@ SQL_DIRECTORY = SOURCE / "sql"
 sys.path.insert(0, str(SOURCE))
 from changelog import write_changelog
 from curate_db import create_final_database
+from corrections import apply_corrections
 from rct import find_rct_candidates
 
 
@@ -31,6 +32,8 @@ class ReviewViewsTest(unittest.TestCase):
             CREATE TABLE device_assignments (device_id TEXT, sorcerer_id TEXT, valid_from TEXT, valid_to TEXT);
             CREATE TABLE ce_wearable (device_id TEXT, ts TEXT, ce_level TEXT, firmware TEXT);
             CREATE TABLE barrier_sensors (ward_code TEXT, ts TEXT, residual_ce TEXT);
+            CREATE TABLE healer_sessions (session_id TEXT, healer_id TEXT, patient_id TEXT, start_ts TEXT, duration_min TEXT);
+            CREATE VIEW effective_infirmary_visits AS SELECT rowid, * FROM infirmary_visits;
             INSERT INTO wards VALUES ('W', 'Kita', 'Kyoto');
             INSERT INTO missions VALUES ('M1', '2025-01-01T10:00:00Z', '2025-01-01T11:00:00Z',
                 'atiK', '1', 'S1|S2', 'failed', 'S1|S2', '');
@@ -123,7 +126,7 @@ class ReviewViewsTest(unittest.TestCase):
             self.assertEqual(len(mission_entries), 2)
             self.assertEqual(mission_entries[0]["changes"]["ward"], {"before": "atiK", "after": "Kita"})
             self.assertIsNone(mission_entries[1]["changes"]["duplicate"]["after"])
-            visit = next(entry for entry in entries if entry["table"] == "infirmary_visits")
+            visit = next(entry for entry in entries if entry["table"] == "effective_infirmary_visits")
             self.assertIn("raw_negative_duration", visit["flags"])
             self.assertIn("before_current_join_date", visit["flags"])
             self.assertTrue(any("firmware_review_required" in entry["flags"] for entry in entries))
@@ -251,6 +254,48 @@ class ReviewViewsTest(unittest.TestCase):
             ).fetchone(),
             ("unresolved_mission", None),
         )
+
+    def test_correction_feed_replays_in_sequence_and_preserves_history(self) -> None:
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.executescript("""
+                CREATE TABLE infirmary_visits (visit_id TEXT, sorcerer_id TEXT, mission_id TEXT,
+                    admitted_at TEXT, discharged_at TEXT, injury_code TEXT, severity TEXT, admitted_from TEXT);
+                INSERT INTO infirmary_visits VALUES ('old','S','M','2025-01-01 09:00','2025-01-01 12:00','A','1','x');
+                CREATE TABLE infirmary_corrections (seq TEXT, op TEXT, op_ts TEXT, visit_id TEXT,
+                    sorcerer_id TEXT, mission_id TEXT, admitted_at TEXT, discharged_at TEXT,
+                    injury_code TEXT, severity TEXT, admitted_from TEXT);
+                INSERT INTO infirmary_corrections VALUES ('3','D','2025-01-02T00:00:00Z','new','','','','','','','');
+                INSERT INTO infirmary_corrections VALUES ('1','I','2025-01-02T00:00:00Z','new','S','M','2025-01-01 09:00','2025-01-01 12:00','A','1','x');
+                INSERT INTO infirmary_corrections VALUES ('2','U','2025-01-02T00:00:00Z','old','S','M','2025-01-01 09:00','2025-01-01 12:00','B','2','x');
+            """)
+            apply_corrections(db)
+            self.assertEqual(db.execute("SELECT visit_id, injury_code FROM effective_infirmary_visits").fetchall(), [('old', 'B')])
+            self.assertEqual(db.execute("SELECT injury_code FROM infirmary_visits").fetchone(), ('A',))
+            self.assertEqual(db.execute("SELECT seq, op FROM correction_history ORDER BY seq").fetchall(), [(1, 'I'), (2, 'U'), (3, 'D')])
+            self.assertEqual(json.loads(db.execute("SELECT before_json FROM correction_history WHERE seq=2").fetchone()[0])["injury_code"], 'A')
+
+    def test_correction_feed_rejects_update_for_missing_visit(self) -> None:
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.executescript("""
+                CREATE TABLE infirmary_visits (visit_id TEXT, sorcerer_id TEXT, mission_id TEXT,
+                    admitted_at TEXT, discharged_at TEXT, injury_code TEXT, severity TEXT, admitted_from TEXT);
+                CREATE TABLE infirmary_corrections (seq TEXT, op TEXT, op_ts TEXT, visit_id TEXT,
+                    sorcerer_id TEXT, mission_id TEXT, admitted_at TEXT, discharged_at TEXT,
+                    injury_code TEXT, severity TEXT, admitted_from TEXT);
+                INSERT INTO infirmary_corrections VALUES ('1','U','2025-01-02T00:00:00Z',
+                    'missing','S','M','2025-01-01 09:00','2025-01-01 12:00','A','1','x');
+            """)
+            with self.assertRaisesRegex(ValueError, "unexpected existing state"):
+                apply_corrections(db)
+
+    def test_healer_overlap_normalizes_timestamp_formats_and_boundaries(self) -> None:
+        self.db.executescript("""
+            INSERT INTO missions VALUES ('M2','2025-01-03T00:00:00Z','2025-01-03T01:00:00Z','Kita','1','S3','failed','','');
+            INSERT INTO infirmary_visits VALUES ('V2','S3','M2','2025-01-03 10:00','2025-01-03 12:00','A','4','ward');
+            INSERT INTO healer_sessions VALUES ('H1','S4','S3','2025-01-03T00:30:00Z','60');
+            INSERT INTO healer_sessions VALUES ('H2','S4','S3','2025-01-03T03:00:00Z','60');
+        """)
+        self.assertEqual(self.db.execute("SELECT session_id, overlap_type FROM healer_visit_overlap WHERE visit_id='V2'").fetchall(), [('H1', 'overlaps')])
 
 
 if __name__ == "__main__":
