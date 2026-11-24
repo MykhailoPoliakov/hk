@@ -1,0 +1,55 @@
+Briefing
+Your mission: find out which living sorcerers at Jujutsu High can really perform the Reverse Cursed Technique (RCT), and prove it with data.
+
+Six months ago a curse called the Inverter got into the Jujutsu Records Office. Since then, the infirmary has recorded sorcerers recovering from critical injuries impossibly fast, without a healer. That is the signature of RCT: turning negative cursed energy into positive energy to heal yourself.
+
+The Principal needs the true list before the next Special Grade incident. But the Records Office warns that the Inverter doesn't just hide things: it creates miracles that never happened. Every number you use, you'll have to defend.
+
+What you get
+What	Details
+Drop 0 (now)	Sorcerers, wards, missions, infirmary visits, wearable assignments, wearable readings (5M+ rows), barrier sensors, plus a data dictionary from the Records Office
+Drop 1 (during the day)	More records. We'll announce it.
+Drop 2 (during the day)	More records, and the bonus question. We'll announce it.
+Looker Studio	Your dashboard: export your gold tables from the notebook and upload them as CSV data sources.
+The Principal	Played by the hosts. You can interview him.
+When a new drop arrives, your pipeline should take it in by changing DROP and rerunning the notebook, not by starting over.
+
+Rules of the game
+Submissions for the main question: each is a list of sorcerer IDs. Only your last submission counts, wrong IDs cost points.
+AI assistants are allowed. But you have to explain every fix yourself during the jury defense, and the data was written by a curse. Read before you trust.
+Everything is rerunnable. At the end we may ask you to rerun your notebook live.
+The questions
+Answer every question with a number or a list and the evidence behind it. Give your final answers based on all drops.
+
+#	Question	Points
+A · Ingest		5
+A1	Load every file into your notebook. Which files needed special handling, and why?	2
+A2	How many unique missions are there?	3
+B · Data quality		15
+B1	In how many different wards did missions take place?	2
+B2	What is the median residual cursed energy in Tokyo and in Kyoto?	2
+B3	How many sorcerers were killed in action between May 2025 and October 2026?	3
+B4	The Records Office says its data dictionary is correct. Which statements in it are wrong? Prove each one with data.	4
+B5	Keep a curse log: every data issue you found, the evidence, and your fix.	4
+C · Metrics		10
+C1	Define recovery time. What is the median recovery time, in hours, for each severity level?	5
+C2	Define in one sentence what counts as evidence of RCT. Implement it once in your code and reuse it everywhere.	5
+D · The Principal's question		30
+D1	Which living sorcerers can really perform the Reverse Cursed Technique? Submit their IDs.	+10 per correct ID, −5 per wrong ID
+D2	Some sorcerers look like RCT users but aren't. For each one you found, explain why they are not.	Part of the jury defense
+Scoring
+Part	Points
+A · Ingest	5
+B · Data quality	15
+C · Metrics	10
+D · The Principal's question	30
+Dashboard	15
+Rerunnable pipeline (shown live)	10
+Presentation and jury defense	15
+Total	100
+Bonus question (opens with drop 2)	+10
+1
+Drop 0 · Detect
+The Records Office has opened its archives: the drop 0 files are below, together with the data dictionary. Read the briefing above first.
+
+Submit here (D1): the sorcerer IDs you believe can perform RCT, based on drop 0.
